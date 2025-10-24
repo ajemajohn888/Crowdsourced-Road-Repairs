@@ -580,10 +580,7 @@
             id: project-id,
             sender: who,
         })
-            c (ok (and
-                (or (is-eq (get status p) STATUS-CANCELED) (is-eq (get status p) STATUS-EXPIRED))
-                (not (get refunded c))
-            ))
+            c (ok (and (or (is-eq (get status p) STATUS-CANCELED) (is-eq (get status p) STATUS-EXPIRED)) (not (get refunded c))))
             (ok false)
         )
         (ok false)
@@ -591,10 +588,7 @@
 )
 (define-read-only (project-expired (project-id uint))
     (match (map-get? projects { id: project-id })
-        p (ok (and
-            (>= stacks-block-height (get deadline p))
-            (< (get pledged p) (get goal p))
-        ))
+        p (ok (and (>= stacks-block-height (get deadline p)) (< (get pledged p) (get goal p))))
         (ok false)
     )
 )
@@ -633,5 +627,93 @@
             )
         )
         (ok u0)
+    )
+)
+(define-map update-counters
+    { id: uint }
+    { next: uint }
+)
+(define-map project-updates
+    {
+        id: uint,
+        seq: uint,
+    }
+    {
+        author: principal,
+        message: (buff 160),
+        created-at: uint,
+    }
+)
+(define-public (post-update
+        (project-id uint)
+        (message (buff 160))
+    )
+    (begin
+        (unwrap! (ensure-project-exists project-id) ERR-NOT-FOUND)
+        (match (map-get? projects { id: project-id })
+            p (let (
+                    (st (get status p))
+                    (auth-ok (or (is-eq tx-sender (get proposer p)) (is-eq (some tx-sender) (get contractor p))))
+                    (allowed-state (or
+                        (is-eq st STATUS-ACTIVE)
+                        (is-eq st STATUS-FUNDED)
+                        (is-eq st STATUS-COMPLETED)
+                    ))
+                    (now-height stacks-block-height)
+                    (counter (map-get? update-counters { id: project-id }))
+                )
+                (unwrap! (assert-condition auth-ok ERR-NOT-AUTHORIZED)
+                    ERR-NOT-AUTHORIZED
+                )
+                (unwrap! (assert-condition allowed-state ERR-BAD-STATE)
+                    ERR-BAD-STATE
+                )
+                (match counter
+                    c (let ((seq (get next c)))
+                        (map-set project-updates {
+                            id: project-id,
+                            seq: seq,
+                        } {
+                            author: tx-sender,
+                            message: message,
+                            created-at: now-height,
+                        })
+                        (map-set update-counters { id: project-id } { next: (+ seq u1) })
+                        (ok seq)
+                    )
+                    (let ((seq u0))
+                        (map-set project-updates {
+                            id: project-id,
+                            seq: seq,
+                        } {
+                            author: tx-sender,
+                            message: message,
+                            created-at: now-height,
+                        })
+                        (map-set update-counters { id: project-id } { next: u1 })
+                        (ok seq)
+                    )
+                )
+            )
+            ERR-NOT-FOUND
+        )
+    )
+)
+(define-read-only (get-update-count (project-id uint))
+    (match (map-get? update-counters { id: project-id })
+        c (ok (get next c))
+        (ok u0)
+    )
+)
+(define-read-only (get-update
+        (project-id uint)
+        (seq uint)
+    )
+    (match (map-get? project-updates {
+        id: project-id,
+        seq: seq,
+    })
+        u (ok u)
+        ERR-NOT-FOUND
     )
 )
