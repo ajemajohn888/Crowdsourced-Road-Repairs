@@ -717,3 +717,167 @@
         ERR-NOT-FOUND
     )
 )
+(define-map milestones
+    {
+        project-id: uint,
+        milestone-id: uint,
+    }
+    {
+        description: (buff 128),
+        percentage: uint,
+        released: bool,
+        created-at: uint,
+    }
+)
+(define-map milestone-counters
+    { project-id: uint }
+    { count: uint }
+)
+(define-map project-released-funds
+    { project-id: uint }
+    { amount: uint }
+)
+(define-public (add-milestone
+        (project-id uint)
+        (description (buff 128))
+        (percentage uint)
+    )
+    (begin
+        (unwrap! (ensure-project-exists project-id) ERR-NOT-FOUND)
+        (unwrap! (assert-condition (> percentage u0) ERR-INVALID-PARAMS)
+            ERR-INVALID-PARAMS
+        )
+        (unwrap! (assert-condition (<= percentage u100) ERR-INVALID-PARAMS)
+            ERR-INVALID-PARAMS
+        )
+        (match (map-get? projects { id: project-id })
+            p (let (
+                    (st (get status p))
+                    (counter (map-get? milestone-counters { project-id: project-id }))
+                    (now-height stacks-block-height)
+                )
+                (unwrap!
+                    (assert-condition (is-eq tx-sender (get proposer p))
+                        ERR-NOT-AUTHORIZED
+                    )
+                    ERR-NOT-AUTHORIZED
+                )
+                (unwrap!
+                    (assert-condition
+                        (or (is-eq st STATUS-ACTIVE) (is-eq st STATUS-FUNDED))
+                        ERR-BAD-STATE
+                    )
+                    ERR-BAD-STATE
+                )
+                (match counter
+                    c (let ((milestone-id (get count c)))
+                        (map-set milestones {
+                            project-id: project-id,
+                            milestone-id: milestone-id,
+                        } {
+                            description: description,
+                            percentage: percentage,
+                            released: false,
+                            created-at: now-height,
+                        })
+                        (map-set milestone-counters { project-id: project-id } { count: (+ milestone-id u1) })
+                        (ok milestone-id)
+                    )
+                    (begin
+                        (map-set milestones {
+                            project-id: project-id,
+                            milestone-id: u0,
+                        } {
+                            description: description,
+                            percentage: percentage,
+                            released: false,
+                            created-at: now-height,
+                        })
+                        (map-set milestone-counters { project-id: project-id } { count: u1 })
+                        (ok u0)
+                    )
+                )
+            )
+            ERR-NOT-FOUND
+        )
+    )
+)
+(define-public (release-milestone
+        (project-id uint)
+        (milestone-id uint)
+    )
+    (begin
+        (unwrap! (ensure-project-exists project-id) ERR-NOT-FOUND)
+        (match (map-get? projects { id: project-id })
+            p (match (map-get? milestones {
+                project-id: project-id,
+                milestone-id: milestone-id,
+            })
+                m (let (
+                        (st (get status p))
+                        (pledged (get pledged p))
+                        (release-amount (/ (* pledged (get percentage m)) u100))
+                        (released-rec (map-get? project-released-funds { project-id: project-id }))
+                    )
+                    (unwrap!
+                        (assert-condition (is-eq tx-sender (get proposer p))
+                            ERR-NOT-AUTHORIZED
+                        )
+                        ERR-NOT-AUTHORIZED
+                    )
+                    (unwrap!
+                        (assert-condition
+                            (or (is-eq st STATUS-FUNDED) (is-eq st STATUS-COMPLETED))
+                            ERR-BAD-STATE
+                        )
+                        ERR-BAD-STATE
+                    )
+                    (unwrap!
+                        (assert-condition (not (get released m)) ERR-BAD-STATE)
+                        ERR-BAD-STATE
+                    )
+                    (map-set milestones {
+                        project-id: project-id,
+                        milestone-id: milestone-id,
+                    } {
+                        description: (get description m),
+                        percentage: (get percentage m),
+                        released: true,
+                        created-at: (get created-at m),
+                    })
+                    (match released-rec
+                        rec (map-set project-released-funds { project-id: project-id } { amount: (+ (get amount rec) release-amount) })
+                        (map-set project-released-funds { project-id: project-id } { amount: release-amount })
+                    )
+                    (ok release-amount)
+                )
+                ERR-NOT-FOUND
+            )
+            ERR-NOT-FOUND
+        )
+    )
+)
+(define-read-only (get-milestone
+        (project-id uint)
+        (milestone-id uint)
+    )
+    (match (map-get? milestones {
+        project-id: project-id,
+        milestone-id: milestone-id,
+    })
+        m (ok m)
+        ERR-NOT-FOUND
+    )
+)
+(define-read-only (get-milestone-count (project-id uint))
+    (match (map-get? milestone-counters { project-id: project-id })
+        c (ok (get count c))
+        (ok u0)
+    )
+)
+(define-read-only (get-released-funds (project-id uint))
+    (match (map-get? project-released-funds { project-id: project-id })
+        r (ok (get amount r))
+        (ok u0)
+    )
+)
